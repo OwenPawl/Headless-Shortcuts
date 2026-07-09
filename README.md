@@ -1,14 +1,7 @@
 # Headless Shortcuts
 
-Headless Shortcuts imports an unsigned Shortcuts workflow plist into
+Headless Shortcuts creates, edits, and deletes shortcuts in
 `~/Library/Shortcuts/Shortcuts.sqlite` without using the Shortcuts UI.
-
-It takes two inputs:
-
-- a workflow plist
-- a shortcut name
-
-On success it prints the created workflow ID.
 
 ## Build
 
@@ -20,28 +13,25 @@ The binary is written to `build/headless-shortcuts`.
 
 ## Usage
 
-Import into the live Shortcuts database:
+Create a shortcut from an unsigned workflow plist:
 
 ```sh
-build/headless-shortcuts import ~/Downloads/MyWorkflow.plist --name "My Workflow"
+build/headless-shortcuts create --plist ~/Downloads/MyWorkflow.plist --name "My Workflow"
 ```
 
-On success, the CLI prints the created workflowID. Use `--json` for structured
-output.
-
-You can also point it at a copied database:
+Replace the actions of an existing shortcut while preserving its name:
 
 ```sh
-build/headless-shortcuts import ~/Downloads/MyWorkflow.plist \
-  --name "Copied DB Test" \
-  --database /tmp/Shortcuts.sqlite
+build/headless-shortcuts edit --id UUID --plist ~/Downloads/MyWorkflow.plist
 ```
 
-## Safety
+Delete an existing shortcut using WorkflowKit's sync-aware deletion path:
 
-For the default live database, the CLI creates a timestamped SQLite backup and
-asks Shortcuts.app to quit before importing. Explicit `--database` paths are
-treated as caller-managed test databases, so backup and quit are not automatic.
+```sh
+build/headless-shortcuts delete --id UUID
+```
+
+Each command prints the affected workflow ID on success.
 
 Signed `AEA1` `.shortcut` envelopes are not accepted; pass an unsigned workflow
 plist.
@@ -49,4 +39,5 @@ plist.
 ## Notes
 
 This uses Apple's private WorkflowKit/Core Data classes and is research tooling.
-The current boundary is deliberately small: plist plus name in, workflow ID out.
+Create and edit currently focus on workflow actions and the supplied or existing
+name; richer workflow metadata is not guaranteed to round-trip unchanged.

@@ -7,7 +7,7 @@ all: $(PRODUCT)
 
 $(PRODUCT): $(SOURCES)
 	mkdir -p build
-	clang -fobjc-arc -fblocks -Wall -Wextra -framework Foundation -lsqlite3 $(SOURCES) -o $(PRODUCT)
+	clang -fobjc-arc -fblocks -Wall -Wextra -framework Foundation $(SOURCES) -o $(PRODUCT)
 
 clean:
 	rm -rf build
