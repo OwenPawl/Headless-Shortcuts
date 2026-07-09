@@ -31,7 +31,24 @@ Delete an existing shortcut using WorkflowKit's sync-aware deletion path:
 build/headless-shortcuts delete --id UUID
 ```
 
-Each command prints the affected workflow ID on success.
+Each command prints one compact JSON object. Create and edit include the
+shortcut name:
+
+```json
+{"name":"My Workflow","ok":true,"operation":"create","workflowID":"UUID"}
+```
+
+Delete uses the same envelope without `name`:
+
+```json
+{"ok":true,"operation":"delete","workflowID":"UUID"}
+```
+
+Failures are also JSON. Invalid arguments exit 64; operational failures exit 1:
+
+```json
+{"error":{"code":"not_found","message":"shortcut UUID was not found"},"ok":false,"operation":"edit","workflowID":"UUID"}
+```
 
 Signed `AEA1` `.shortcut` envelopes are not accepted; pass an unsigned workflow
 plist.

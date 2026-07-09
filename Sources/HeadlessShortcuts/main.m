@@ -24,12 +24,23 @@ typedef struct {
     Class proxyClass;
 } HSRuntime;
 
-static void setErrorMessage(NSError **error, NSString *message) {
+static NSString *const HSErrorDomain = @"HeadlessShortcuts";
+
+typedef NS_ENUM(NSInteger, HSErrorCode) {
+    HSErrorOperationFailed = 1,
+    HSErrorNotFound = 2,
+};
+
+static void setError(NSError **error, HSErrorCode code, NSString *message) {
     if (error) {
-        *error = [NSError errorWithDomain:@"HeadlessShortcuts"
-                                     code:1
+        *error = [NSError errorWithDomain:HSErrorDomain
+                                     code:code
                                  userInfo:@{NSLocalizedDescriptionKey: message}];
     }
+}
+
+static void setErrorMessage(NSError **error, NSString *message) {
+    setError(error, HSErrorOperationFailed, message);
 }
 
 static NSString *standardPath(NSString *path) {
@@ -42,14 +53,6 @@ static NSString *databasePath(void) {
         return standardPath(override);
     }
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Shortcuts/Shortcuts.sqlite"];
-}
-
-static void printUsage(void) {
-    fprintf(stderr,
-            "usage:\n"
-            "  headless-shortcuts create --plist PATH --name NAME\n"
-            "  headless-shortcuts edit --id UUID --plist PATH\n"
-            "  headless-shortcuts delete --id UUID\n");
 }
 
 static BOOL parseOptions(NSArray<NSString *> *arguments, HSOptions *options, NSError **error) {
@@ -125,6 +128,64 @@ static BOOL parseOptions(NSArray<NSString *> *arguments, HSOptions *options, NSE
         options->workflowPath = standardPath(options->workflowPath);
     }
     return YES;
+}
+
+static NSString *operationName(HSCommand command) {
+    switch (command) {
+        case HSCommandCreate:
+            return @"create";
+        case HSCommandEdit:
+            return @"edit";
+        case HSCommandDelete:
+            return @"delete";
+        case HSCommandNone:
+            return @"unknown";
+    }
+}
+
+static void printJSON(NSDictionary *response) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:response
+                                                   options:NSJSONWritingSortedKeys
+                                                     error:nil];
+    if (data) {
+        fwrite([data bytes], 1, [data length], stdout);
+        fputc('\n', stdout);
+    }
+}
+
+static void printSuccess(HSCommand command, NSString *workflowID, NSString *name) {
+    NSMutableDictionary *response = [@{
+        @"ok": @YES,
+        @"operation": operationName(command),
+        @"workflowID": workflowID,
+    } mutableCopy];
+    if ([name length]) {
+        response[@"name"] = name;
+    }
+    printJSON(response);
+}
+
+static void printFailure(HSCommand command, NSString *workflowID, NSError *error, NSString *code) {
+    NSString *message = [error localizedDescription] ?: @"operation failed";
+    NSMutableDictionary *response = [@{
+        @"ok": @NO,
+        @"operation": operationName(command),
+        @"error": @{
+            @"code": code,
+            @"message": message,
+        },
+    } mutableCopy];
+    if ([workflowID length]) {
+        response[@"workflowID"] = workflowID;
+    }
+    printJSON(response);
+}
+
+static NSString *operationErrorCode(NSError *error) {
+    if ([[error domain] isEqualToString:HSErrorDomain] && [error code] == HSErrorNotFound) {
+        return @"not_found";
+    }
+    return @"operation_failed";
 }
 
 static id callObject0(id object, SEL selector) {
@@ -279,7 +340,11 @@ static NSString *identifierForReference(id reference, NSError **error) {
     return workflowID;
 }
 
-static NSString *createShortcut(HSOptions options, HSRuntime runtime, id proxy, NSError **error) {
+static NSString *createShortcut(HSOptions options,
+                                HSRuntime runtime,
+                                id proxy,
+                                NSString **nameOut,
+                                NSError **error) {
     id workflow = materializedWorkflow(runtime, options.workflowPath, options.name, error);
     if (!workflow) {
         return nil;
@@ -292,7 +357,14 @@ static NSString *createShortcut(HSOptions options, HSRuntime runtime, id proxy, 
                                   record,
                                   (NSUInteger)0,
                                   error);
-    return reference ? identifierForReference(reference, error) : nil;
+    if (!reference) {
+        return nil;
+    }
+    id createdName = callObject0(reference, @selector(name));
+    if (nameOut && [createdName isKindOfClass:[NSString class]] && [createdName length]) {
+        *nameOut = createdName;
+    }
+    return identifierForReference(reference, error);
 }
 
 static id referenceForWorkflowID(id proxy, NSString *workflowID) {
@@ -300,10 +372,17 @@ static id referenceForWorkflowID(id proxy, NSString *workflowID) {
     return reference(proxy, @selector(referenceForWorkflowID:), workflowID);
 }
 
-static NSString *editShortcut(HSOptions options, HSRuntime runtime, id database, id proxy, NSError **error) {
+static NSString *editShortcut(HSOptions options,
+                              HSRuntime runtime,
+                              id database,
+                              id proxy,
+                              NSString **nameOut,
+                              NSError **error) {
     id reference = referenceForWorkflowID(proxy, options.workflowID);
     if (!reference) {
-        setErrorMessage(error, [NSString stringWithFormat:@"shortcut %@ was not found", options.workflowID]);
+        setError(error,
+                 HSErrorNotFound,
+                 [NSString stringWithFormat:@"shortcut %@ was not found", options.workflowID]);
         return nil;
     }
 
@@ -367,13 +446,18 @@ static NSString *editShortcut(HSOptions options, HSRuntime runtime, id database,
         }
         return nil;
     }
+    if (nameOut) {
+        *nameOut = existingName;
+    }
     return options.workflowID;
 }
 
 static NSString *deleteShortcut(HSOptions options, id database, id proxy, NSError **error) {
     id reference = referenceForWorkflowID(proxy, options.workflowID);
     if (!reference) {
-        setErrorMessage(error, [NSString stringWithFormat:@"shortcut %@ was not found", options.workflowID]);
+        setError(error,
+                 HSErrorNotFound,
+                 [NSString stringWithFormat:@"shortcut %@ was not found", options.workflowID]);
         return nil;
     }
 
@@ -395,30 +479,30 @@ int main(int argc, const char **argv) {
         NSError *error = nil;
         HSOptions options = {0};
         if (!parseOptions(arguments, &options, &error)) {
-            fprintf(stderr, "error: %s\n\n", [[error localizedDescription] UTF8String]);
-            printUsage();
+            printFailure(options.command, nil, error, @"invalid_arguments");
             return 64;
         }
 
         HSRuntime runtime = {0};
         if (!loadRuntime(&runtime, &error)) {
-            fprintf(stderr, "error: %s\n", [[error localizedDescription] UTF8String]);
+            printFailure(options.command, options.workflowID, error, operationErrorCode(error));
             return 1;
         }
         id database = nil;
         id proxy = nil;
         if (!openDatabase(runtime, &database, &proxy, &error)) {
-            fprintf(stderr, "error: %s\n", [[error localizedDescription] UTF8String]);
+            printFailure(options.command, options.workflowID, error, operationErrorCode(error));
             return 1;
         }
 
         NSString *workflowID = nil;
+        NSString *name = options.command == HSCommandCreate ? options.name : nil;
         switch (options.command) {
             case HSCommandCreate:
-                workflowID = createShortcut(options, runtime, proxy, &error);
+                workflowID = createShortcut(options, runtime, proxy, &name, &error);
                 break;
             case HSCommandEdit:
-                workflowID = editShortcut(options, runtime, database, proxy, &error);
+                workflowID = editShortcut(options, runtime, database, proxy, &name, &error);
                 break;
             case HSCommandDelete:
                 workflowID = deleteShortcut(options, database, proxy, &error);
@@ -427,11 +511,11 @@ int main(int argc, const char **argv) {
                 break;
         }
         if (!workflowID) {
-            fprintf(stderr, "error: %s\n", [[error localizedDescription] UTF8String]);
+            printFailure(options.command, options.workflowID, error, operationErrorCode(error));
             return 1;
         }
 
-        printf("%s\n", [workflowID UTF8String]);
+        printSuccess(options.command, workflowID, name);
     }
     return 0;
 }
