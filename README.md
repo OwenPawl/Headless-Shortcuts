@@ -1,7 +1,7 @@
 # Headless Shortcuts
 
-Headless Shortcuts creates, edits, and deletes shortcuts in
-`~/Library/Shortcuts/Shortcuts.sqlite` without using the Shortcuts UI.
+A macOS CLI for creating, editing, and deleting shortcuts directly in
+`~/Library/Shortcuts/Shortcuts.sqlite`.
 
 ## Build
 
@@ -11,50 +11,28 @@ make
 
 The binary is written to `build/headless-shortcuts`.
 
-## Usage
-
-Create a shortcut from an unsigned workflow plist:
+## Commands
 
 ```sh
-build/headless-shortcuts create --plist ~/Downloads/MyWorkflow.plist --name "My Workflow"
-```
+# Create
+build/headless-shortcuts create --plist workflow.plist --name "My Shortcut"
 
-Replace the actions of an existing shortcut while preserving its name:
+# Replace actions and preserve the existing name
+build/headless-shortcuts edit --id UUID --plist workflow.plist
 
-```sh
-build/headless-shortcuts edit --id UUID --plist ~/Downloads/MyWorkflow.plist
-```
-
-Delete an existing shortcut using WorkflowKit's sync-aware deletion path:
-
-```sh
+# Delete
 build/headless-shortcuts delete --id UUID
 ```
 
-Each command prints one compact JSON object. Create and edit include the
-shortcut name:
+Every command writes one compact JSON object to stdout:
 
 ```json
-{"name":"My Workflow","ok":true,"operation":"create","workflowID":"UUID"}
+{"name":"My Shortcut","ok":true,"operation":"create","workflowID":"UUID"}
 ```
 
-Delete uses the same envelope without `name`:
+Exit codes are `0` for success, `1` for an operation failure, and `64` for
+invalid arguments.
 
-```json
-{"ok":true,"operation":"delete","workflowID":"UUID"}
-```
-
-Failures are also JSON. Invalid arguments exit 64; operational failures exit 1:
-
-```json
-{"error":{"code":"not_found","message":"shortcut UUID was not found"},"ok":false,"operation":"edit","workflowID":"UUID"}
-```
-
-Signed `AEA1` `.shortcut` envelopes are not accepted; pass an unsigned workflow
-plist.
-
-## Notes
-
-This uses Apple's private WorkflowKit/Core Data classes and is research tooling.
-Create and edit currently focus on workflow actions and the supplied or existing
-name; richer workflow metadata is not guaranteed to round-trip unchanged.
+This tool uses Apple's private WorkflowKit APIs. It accepts unsigned workflow
+plists, not signed `AEA1` `.shortcut` files. Create and edit currently focus on
+workflow actions and names.
