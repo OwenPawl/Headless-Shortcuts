@@ -1,45 +1,14 @@
 # Headless Shortcuts
 
-Headless Shortcuts imports unsigned Shortcuts workflow plists into
-`~/Library/Shortcuts/Shortcuts.sqlite` without driving the Shortcuts UI.
+Headless Shortcuts imports an unsigned Shortcuts workflow plist into
+`~/Library/Shortcuts/Shortcuts.sqlite` without using the Shortcuts UI.
 
-It does not hand-write `ZSHORTCUT` rows. The CLI loads Apple's private
-WorkflowKit framework, turns the workflow file into a `WFWorkflowRecord`, and
-asks WorkflowKit/Core Data to create the saved shortcut row.
+It takes two inputs:
 
-## Status
+- a workflow plist
+- a shortcut name
 
-This is local macOS research tooling. It uses private WorkflowKit Objective-C
-classes and is expected to track Apple's Shortcuts storage model.
-
-Current supported boundary: unsigned workflow plist + supplied name -> inserted
-Shortcut row -> generated workflowID. The importer is focused on preserving
-workflow actions and the caller-supplied name well enough for Shortcuts to load
-and run the created shortcut.
-
-Current save path:
-
-```text
-WFWorkflowFile initWithFileData:name:error:
-  -> WFWorkflowFile recordRepresentationWithError:
-  -> WFWorkflow initWithRecord:reference:storageProvider:error:
-  -> WFWorkflow.databaseAccessQueue dispatch_barrier_sync
-  -> WFWorkflow.saveToRecord
-  -> WFWorkflow.record
-  -> finalize actionCount from record.actions
-  -> WFDatabaseProxy createWorkflowWithWorkflowRecord:nameCollisionBehavior:error:
-```
-
-See `docs/save-path.md` for the storage rationale and copied-database proof.
-
-## Known Limitations
-
-This is not yet a full native-import clone for every record metadata field.
-Runtime traces showed that `saveToRecord` can recompute fields such as output
-classes, and richer parity for input fallback, output classes, triggers, and
-related record metadata remains research territory. Those fields are not part
-of the current acceptance target unless they prevent a basic action/name import
-from producing a valid, usable shortcut.
+On success it prints the created workflow ID.
 
 ## Build
 
@@ -49,7 +18,7 @@ make
 
 The binary is written to `build/headless-shortcuts`.
 
-## Import
+## Usage
 
 Import into the live Shortcuts database:
 
@@ -60,16 +29,10 @@ build/headless-shortcuts import ~/Downloads/MyWorkflow.plist --name "My Workflow
 On success, the CLI prints the created workflowID. Use `--json` for structured
 output.
 
-Validate against a copied database first:
+You can also point it at a copied database:
 
 ```sh
-scripts/smoke-import-copy.sh
-```
-
-Or provide a database copy manually:
-
-```sh
-build/headless-shortcuts import fixtures/notification.workflow.plist \
+build/headless-shortcuts import ~/Downloads/MyWorkflow.plist \
   --name "Copied DB Test" \
   --database /tmp/Shortcuts.sqlite
 ```
@@ -82,3 +45,8 @@ treated as caller-managed test databases, so backup and quit are not automatic.
 
 Signed `AEA1` `.shortcut` envelopes are not accepted; pass an unsigned workflow
 plist.
+
+## Notes
+
+This uses Apple's private WorkflowKit/Core Data classes and is research tooling.
+The current boundary is deliberately small: plist plus name in, workflow ID out.
