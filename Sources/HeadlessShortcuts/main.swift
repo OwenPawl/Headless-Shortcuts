@@ -1,5 +1,4 @@
 import Darwin
-import Dispatch
 import Foundation
 import ObjectiveC
 
@@ -39,21 +38,16 @@ private typealias InitDatabase =
   @convention(c) (AnyObject, Selector, UInt, AnyObject, ErrorPointer) -> AnyObject?
 private typealias InitFile =
   @convention(c) (AnyObject, Selector, AnyObject, AnyObject, ErrorPointer) -> AnyObject?
-private typealias InitWorkflow =
-  @convention(c) (AnyObject, Selector, AnyObject, AnyObject?, AnyObject?, ErrorPointer) ->
-  AnyObject?
 private typealias WorkflowForReference =
   @convention(c) (AnyObject, Selector, AnyObject, AnyObject, ErrorPointer) -> AnyObject?
 private typealias CreateWorkflow =
   @convention(c) (AnyObject, Selector, AnyObject, UInt, ErrorPointer) -> AnyObject?
+private typealias SaveRecordWithReference =
+  @convention(c) (AnyObject, Selector, AnyObject, AnyObject, ErrorPointer) -> Bool
 private typealias DeleteReference =
   @convention(c) (AnyObject, Selector, AnyObject, ErrorPointer) -> Bool
 private typealias SetObject = @convention(c) (AnyObject, Selector, AnyObject) -> Void
-private typealias SetBool = @convention(c) (AnyObject, Selector, Bool) -> Void
 private typealias SetInt = @convention(c) (AnyObject, Selector, Int) -> Void
-private typealias Void0 = @convention(c) (AnyObject, Selector) -> Void
-private typealias SaveCompletion = @convention(block) (NSError?) -> Void
-private typealias SaveWithCompletion = @convention(c) (AnyObject, Selector, SaveCompletion) -> Void
 
 private func toolError(_ message: String, code: ToolErrorCode = .operationFailed) -> NSError {
   NSError(
@@ -219,11 +213,6 @@ private func setObject(_ object: AnyObject, _ selector: Selector, _ value: AnyOb
   function(object, selector, value)
 }
 
-private func setBool(_ object: AnyObject, _ selector: Selector, _ value: Bool) throws {
-  let function = unsafeBitCast(try methodImplementation(object, selector), to: SetBool.self)
-  function(object, selector, value)
-}
-
 private func setInt(_ object: AnyObject, _ selector: Selector, _ value: Int) throws {
   let function = unsafeBitCast(try methodImplementation(object, selector), to: SetInt.self)
   function(object, selector, value)
@@ -299,7 +288,7 @@ private func openDatabase(_ runtime: WorkflowRuntime) throws -> (
   return (database, proxy)
 }
 
-private func materializedWorkflow(
+private func workflowRecord(
   runtime: WorkflowRuntime,
   plistPath: String,
   name: String
@@ -328,52 +317,10 @@ private func materializedWorkflow(
     try methodImplementation(file, recordSelector),
     to: ObjectError.self
   )
-  guard var record = recordRepresentation(file, recordSelector, &error) else {
+  guard let record = recordRepresentation(file, recordSelector, &error) else {
     throw error ?? toolError("workflow record creation failed")
   }
   let setNameSelector = selector("setName:")
-  if responds(record, to: setNameSelector) {
-    try setObject(record, setNameSelector, name as NSString)
-  }
-
-  let workflowObject = try allocate(runtime.workflowClass)
-  let workflowSelector = selector("initWithRecord:reference:storageProvider:error:")
-  let initializeWorkflow = unsafeBitCast(
-    try methodImplementation(workflowObject, workflowSelector),
-    to: InitWorkflow.self
-  )
-  guard
-    let workflow = initializeWorkflow(
-      workflowObject,
-      workflowSelector,
-      record,
-      nil,
-      nil,
-      &error
-    )
-  else {
-    throw error ?? toolError("WFWorkflow initialization failed")
-  }
-
-  let queueSelector = selector("databaseAccessQueue")
-  guard let queueObject = callObject0(workflow, queueSelector),
-    let queue = queueObject as? DispatchQueue
-  else {
-    throw toolError("WFWorkflow did not provide databaseAccessQueue")
-  }
-  let saveSelector = selector("saveToRecord")
-  let saveToRecord = unsafeBitCast(
-    try methodImplementation(workflow, saveSelector),
-    to: Void0.self
-  )
-  queue.sync(flags: .barrier) {
-    saveToRecord(workflow, saveSelector)
-  }
-
-  guard let savedRecord = callObject0(workflow, selector("record")) else {
-    throw toolError("WFWorkflow did not provide a record after saveToRecord")
-  }
-  record = savedRecord
   if responds(record, to: setNameSelector) {
     try setObject(record, setNameSelector, name as NSString)
   }
@@ -383,7 +330,7 @@ private func materializedWorkflow(
   {
     try setInt(record, setActionCountSelector, actions.count)
   }
-  return workflow
+  return record
 }
 
 private func identifier(for reference: AnyObject) throws -> String {
@@ -403,14 +350,11 @@ private func createShortcut(
   proxy: AnyObject
 ) throws -> (workflowID: String, name: String) {
   let requestedName = options.name!
-  let workflow = try materializedWorkflow(
+  let record = try workflowRecord(
     runtime: runtime,
     plistPath: options.workflowPath!,
     name: requestedName
   )
-  guard let record = callObject0(workflow, selector("record")) else {
-    throw toolError("WFWorkflow did not provide a record")
-  }
 
   var error: NSError?
   let createSelector = selector("createWorkflowWithWorkflowRecord:nameCollisionBehavior:error:")
@@ -468,45 +412,23 @@ private func editShortcut(
   else {
     throw toolError("existing shortcut did not provide a name")
   }
+  guard let storageProvider = callObject0(existingWorkflow, selector("storageProvider")) else {
+    throw toolError("existing shortcut did not provide a storage provider")
+  }
 
-  let replacementWorkflow = try materializedWorkflow(
+  let replacementRecord = try workflowRecord(
     runtime: runtime,
     plistPath: options.workflowPath!,
     name: existingName
   )
-  guard let replacementActions = callObject0(replacementWorkflow, selector("actions")) as? NSArray
-  else {
-    throw toolError("replacement workflow did not provide actions")
-  }
 
-  var copiedActions: [AnyObject] = []
-  copiedActions.reserveCapacity(replacementActions.count)
-  for element in replacementActions {
-    guard let action = element as? NSCopying else {
-      throw toolError("replacement workflow action could not be copied")
-    }
-    copiedActions.append(action.copy(with: nil) as AnyObject)
-  }
-
-  try setBool(existingWorkflow, selector("setSaveDisabled:"), true)
-  try setObject(existingWorkflow, selector("setActions:"), copiedActions as NSArray)
-  try setBool(existingWorkflow, selector("setSaveDisabled:"), false)
-
-  let semaphore = DispatchSemaphore(value: 0)
-  var saveError: NSError?
-  let completion: SaveCompletion = { error in
-    saveError = error
-    semaphore.signal()
-  }
-  let saveSelector = selector("saveWithCompletionBlock:")
-  let save = unsafeBitCast(
-    try methodImplementation(existingWorkflow, saveSelector),
-    to: SaveWithCompletion.self
+  let saveSelector = selector("saveRecord:withReference:error:")
+  let saveRecord = unsafeBitCast(
+    try methodImplementation(storageProvider, saveSelector),
+    to: SaveRecordWithReference.self
   )
-  save(existingWorkflow, saveSelector, completion)
-  semaphore.wait()
-  if let saveError {
-    throw saveError
+  if !saveRecord(storageProvider, saveSelector, replacementRecord, reference, &error) {
+    throw error ?? toolError("workflow record save failed")
   }
   return (workflowID, existingName)
 }
