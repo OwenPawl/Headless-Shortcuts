@@ -57,6 +57,7 @@ The CLI uses the native WorkflowKit API family shared by macOS 26 and 27:
 deletion. It parses and persists a complete `WFWorkflowRecord` and never
 reconstructs shortcut rows with SQL.
 
-The pre-27 API mapping was independently demonstrated by
-[Kenna Blackburn's OPHSC](https://github.com/Kenna-Blackburn/OPHSC), released
-under the MIT License.
+Special thanks to **No_Pen_3825** for creating
+[OPHSC](https://github.com/Kenna-Blackburn/OPHSC), which adapted Headless
+Shortcuts for macOS releases before 27.0 and helped establish the compatible
+WorkflowKit persistence path used here.
